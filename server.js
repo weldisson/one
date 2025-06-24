@@ -6,6 +6,8 @@ const { bundle } = require('@remotion/bundler');
 const { renderMedia, selectComposition } = require('@remotion/renderer');
 const { createWriteStream } = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const https = require('https');
+const http = require('http');
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -81,33 +83,176 @@ const validTransitionEffects = [
   'scale-rotate'
 ];
 
-// Rota para upload e renderização de vídeo
-app.post('/api/create-video', 
-  upload.fields([
-    { name: 'primaryAudio', maxCount: 1 },
-    { name: 'secondaryAudio', maxCount: 1 },
-    { name: 'images', maxCount: 5 }
-  ]), 
-  async (req, res) => {
+// Função para baixar arquivo de URL com suporte a redirecionamentos
+async function downloadFile(url, filepath, maxRedirects = 5) {
+  return new Promise((resolve, reject) => {
+    if (maxRedirects === 0) {
+      reject(new Error(`Too many redirects for ${url}`));
+      return;
+    }
+
+    const client = url.startsWith('https') ? https : http;
+    const file = fs.createWriteStream(filepath);
+    
+    client.get(url, (response) => {
+      // Seguir redirecionamentos
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        file.close();
+        fs.unlink(filepath, () => {}); // Remove arquivo vazio
+        
+        const redirectUrl = response.headers.location;
+        console.log(`🔄 Redirecionando: ${url} -> ${redirectUrl}`);
+        
+        // Recursivamente baixar da nova URL
+        downloadFile(redirectUrl, filepath, maxRedirects - 1)
+          .then(resolve)
+          .catch(reject);
+        return;
+      }
+      
+      if (response.statusCode !== 200) {
+        file.close();
+        fs.unlink(filepath, () => {});
+        reject(new Error(`Failed to download ${url}: ${response.statusCode}`));
+        return;
+      }
+      
+      response.pipe(file);
+      
+      file.on('finish', () => {
+        file.close();
+        resolve(filepath);
+      });
+      
+      file.on('error', (err) => {
+        fs.unlink(filepath, () => {}); // Remove arquivo incompleto
+        reject(err);
+      });
+    }).on('error', (err) => {
+      file.close();
+      fs.unlink(filepath, () => {});
+      reject(err);
+    });
+  });
+}
+
+// Função para validar URL
+function isValidUrl(string) {
+  try {
+    new URL(string);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Rota para criação de vídeo com URLs
+app.post('/api/create-video', async (req, res) => {
+    let downloadedFiles = []; // Declarar no escopo da função para acesso no catch
+    
     try {
       console.log('📂 Iniciando processamento do vídeo...');
       
-      // Validar arquivos recebidos
-      if (!req.files?.primaryAudio || !req.files?.images) {
+      // Validar URLs recebidas
+      const { primaryAudioUrl, secondaryAudioUrl, imageUrls } = req.body;
+      
+      if (!primaryAudioUrl || !imageUrls) {
         return res.status(400).json({
-          error: 'É necessário enviar 1 áudio primário e pelo menos 1 imagem (máximo 5). Áudio secundário é opcional.'
+          error: 'É necessário enviar primaryAudioUrl e imageUrls (array). secondaryAudioUrl é opcional.'
         });
       }
 
-      if (req.files.images.length > 5) {
+      // Validar URL do áudio primário
+      if (!isValidUrl(primaryAudioUrl)) {
+        return res.status(400).json({
+          error: 'primaryAudioUrl deve ser uma URL válida'
+        });
+      }
+
+      // Validar URL do áudio secundário (se fornecido)
+      if (secondaryAudioUrl && !isValidUrl(secondaryAudioUrl)) {
+        return res.status(400).json({
+          error: 'secondaryAudioUrl deve ser uma URL válida'
+        });
+      }
+
+      // Validar URLs das imagens
+      const imageUrlsArray = Array.isArray(imageUrls) ? imageUrls : [imageUrls];
+      
+      if (imageUrlsArray.length === 0) {
+        return res.status(400).json({
+          error: 'É necessário enviar pelo menos 1 URL de imagem'
+        });
+      }
+
+      if (imageUrlsArray.length > 5) {
         return res.status(400).json({
           error: 'Máximo de 5 imagens permitidas'
         });
       }
 
-      const primaryAudioFile = req.files.primaryAudio[0];
-      const secondaryAudioFile = req.files.secondaryAudio ? req.files.secondaryAudio[0] : null;
-      const imageFiles = req.files.images;
+      for (const imageUrl of imageUrlsArray) {
+        if (!isValidUrl(imageUrl)) {
+          return res.status(400).json({
+            error: `URL de imagem inválida: ${imageUrl}`
+          });
+        }
+      }
+
+      console.log('📥 Baixando arquivos...');
+      
+      // Criar diretório de uploads se não existir
+      const uploadDir = path.join(__dirname, 'uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+
+      // Baixar áudio primário
+      const primaryAudioFilename = `primary-${uuidv4()}.mp3`;
+      const primaryAudioPath = path.join(uploadDir, primaryAudioFilename);
+      await downloadFile(primaryAudioUrl, primaryAudioPath);
+      downloadedFiles.push(primaryAudioPath);
+      console.log(`✅ Áudio primário baixado para uploads: ${primaryAudioFilename}`);
+
+      // Baixar áudio secundário (se fornecido)
+      let secondaryAudioPath = null;
+      let secondaryAudioFilename = null;
+      if (secondaryAudioUrl) {
+        secondaryAudioFilename = `secondary-${uuidv4()}.mp3`;
+        secondaryAudioPath = path.join(uploadDir, secondaryAudioFilename);
+        await downloadFile(secondaryAudioUrl, secondaryAudioPath);
+        downloadedFiles.push(secondaryAudioPath);
+        console.log(`✅ Áudio secundário baixado para uploads: ${secondaryAudioFilename}`);
+      }
+
+      // Baixar imagens
+      const imagePaths = [];
+      const imageFilenames = [];
+      for (let i = 0; i < imageUrlsArray.length; i++) {
+        const imageFilename = `image-${i}-${uuidv4()}.jpg`;
+        const imagePath = path.join(uploadDir, imageFilename);
+        await downloadFile(imageUrlsArray[i], imagePath);
+        downloadedFiles.push(imagePath);
+        imagePaths.push(imagePath);
+        imageFilenames.push(imageFilename);
+        console.log(`✅ Imagem ${i + 1} baixada para uploads: ${imageFilename}`);
+      }
+
+      // Criar objetos simulando arquivos do multer
+      const primaryAudioFile = {
+        filename: primaryAudioFilename,
+        path: primaryAudioPath
+      };
+      
+      const secondaryAudioFile = secondaryAudioPath ? {
+        filename: secondaryAudioFilename,
+        path: secondaryAudioPath
+      } : null;
+      
+      const imageFiles = imagePaths.map((imagePath, index) => ({
+        filename: imageFilenames[index],
+        path: imagePath
+      }));
       
       // Parâmetros opcionais do body da requisição - CONVERTENDO PARA NÚMEROS
       const {
@@ -157,24 +302,24 @@ app.post('/api/create-video',
       console.log(`⏱️  Duração total calculada: ${totalDuration}s`);
 
       // Preparar URLs HTTP dos arquivos (ao invés de caminhos locais)
-      const primaryAudioUrl = `http://localhost:${PORT}/uploads/${primaryAudioFile.filename}`;
-      const secondaryAudioUrl = secondaryAudioFile 
+      const primaryAudioFileUrl = `http://localhost:${PORT}/uploads/${primaryAudioFile.filename}`;
+      const secondaryAudioFileUrl = secondaryAudioFile 
         ? `http://localhost:${PORT}/uploads/${secondaryAudioFile.filename}` 
         : null;
-      const imageUrls = imageFiles.map(file => `http://localhost:${PORT}/uploads/${file.filename}`);
+      const imageFileUrls = imageFiles.map(file => `http://localhost:${PORT}/uploads/${file.filename}`);
 
       console.log('🔗 URLs dos arquivos:');
-      console.log('   🎵 Áudio primário:', primaryAudioUrl);
-      if (secondaryAudioUrl) {
-        console.log('   🎶 Áudio secundário:', secondaryAudioUrl);
+      console.log('   🎵 Áudio primário:', primaryAudioFileUrl);
+      if (secondaryAudioFileUrl) {
+        console.log('   🎶 Áudio secundário:', secondaryAudioFileUrl);
       }
-      console.log('   🖼️  Imagens:', imageUrls);
+      console.log('   🖼️  Imagens:', imageFileUrls);
 
       // Input props para o componente Remotion
       const inputProps = {
-        images: imageUrls,
-        primaryAudioSrc: primaryAudioUrl,
-        secondaryAudioSrc: secondaryAudioUrl,
+        images: imageFileUrls,
+        primaryAudioSrc: primaryAudioFileUrl,
+        secondaryAudioSrc: secondaryAudioFileUrl,
         primaryAudioVolume: primaryAudioVolumeNum,
         secondaryAudioVolume: secondaryAudioVolumeNum,
         transitionDuration: transitionDurationNum,
@@ -235,17 +380,17 @@ app.post('/api/create-video',
 
       console.log('✅ Vídeo renderizado com sucesso!');
 
-      // Cleanup: remover arquivos temporários de upload
+      // Cleanup: remover arquivos baixados
       setTimeout(() => {
         try {
-          fs.unlinkSync(primaryAudioFile.path);
-          if (secondaryAudioFile) {
-            fs.unlinkSync(secondaryAudioFile.path);
-          }
-          imageFiles.forEach(file => fs.unlinkSync(file.path));
-          console.log('🧹 Arquivos temporários removidos');
+          downloadedFiles.forEach(file => {
+            if (fs.existsSync(file)) {
+              fs.unlinkSync(file);
+            }
+          });
+          console.log('🧹 Arquivos baixados removidos');
         } catch (error) {
-          console.error('⚠️  Erro ao remover arquivos temporários:', error);
+          console.error('⚠️  Erro ao remover arquivos baixados:', error);
         }
       }, 10000); // Aguardar 10 segundos antes da limpeza
 
@@ -284,16 +429,14 @@ app.post('/api/create-video',
     } catch (error) {
       console.error('❌ Erro durante o processamento:', error);
       
-      // Cleanup em caso de erro
+      // Cleanup em caso de erro - remover arquivos baixados
       try {
-        if (req.files?.primaryAudio) {
-          fs.unlinkSync(req.files.primaryAudio[0].path);
-        }
-        if (req.files?.secondaryAudio) {
-          fs.unlinkSync(req.files.secondaryAudio[0].path);
-        }
-        if (req.files?.images) {
-          req.files.images.forEach(file => fs.unlinkSync(file.path));
+        if (downloadedFiles && downloadedFiles.length > 0) {
+          downloadedFiles.forEach(file => {
+            if (fs.existsSync(file)) {
+              fs.unlinkSync(file);
+            }
+          });
         }
       } catch (cleanupError) {
         console.error('⚠️  Erro durante cleanup:', cleanupError);

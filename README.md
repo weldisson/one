@@ -23,23 +23,38 @@ A API estará rodando em `http://localhost:3002`
 npm test
 ```
 
-## 📋 Endpoints
+## 📋 Rotas da API
 
-### Status da API
+### 1. 🔍 **Status da API**
 ```
 GET /api/status
 ```
+**Descrição:** Verifica se a API está funcionando  
+**Resposta:** Status da API, timestamp e efeitos disponíveis
 
-### Listar efeitos de transição
+**Curl:**
+```bash
+curl -X GET http://localhost:3002/api/status
+```
+
+### 2. 🎨 **Listar Efeitos de Transição**
 ```
 GET /api/transition-effects
 ```
+**Descrição:** Lista todos os efeitos de transição disponíveis com descrições  
+**Resposta:** Array com ID, nome e descrição de cada efeito
 
-### Criar vídeo
+**Curl:**
+```bash
+curl -X GET http://localhost:3002/api/transition-effects
+```
+
+### 3. 🎬 **Criar Vídeo**
 ```
 POST /api/create-video
 Content-Type: multipart/form-data
 ```
+**Descrição:** Cria um vídeo slideshow com as imagens e áudios enviados
 
 **Campos obrigatórios:**
 - `primaryAudio` (file): Arquivo de áudio principal (MP3, WAV, etc.) - ex: narração, oração
@@ -49,16 +64,57 @@ Content-Type: multipart/form-data
 - `secondaryAudio` (file): Arquivo de áudio secundário (MP3, WAV, etc.) - ex: música de fundo
 - `primaryAudioVolume` (string): Volume do áudio principal (0.0 a 1.0, padrão: 1.0)
 - `secondaryAudioVolume` (string): Volume do áudio secundário (0.0 a 1.0, padrão: 0.3)
-- `transitionEffect` (string): Efeito de transição (padrão: 'fade')
+- `transitionEffect` (string): Efeito de transição (padrão: 'zoom-out')
 - `imageDuration` (string): Duração de cada imagem em segundos (padrão: 3)
 - `transitionDuration` (string): Duração da transição em segundos (padrão: 1)
 - `fps` (string): Frames por segundo (padrão: 30)
 - `width` (string): Largura do vídeo (padrão: 1080 - formato 9:16)
 - `height` (string): Altura do vídeo (padrão: 1920 - formato 9:16)
+- `outputFormat` (string): Formato de saída (padrão: 'mp4')
 
-### Download de vídeo
+**Curl:**
+```bash
+curl -X POST http://localhost:3002/api/create-video \
+  -F "primaryAudio=@./oracao.mp3" \
+  -F "secondaryAudio=@./musica.mp3" \
+  -F "images=@./foto1.jpg" \
+  -F "images=@./foto2.jpg" \
+  -F "images=@./foto3.jpg" \
+  -F "imageDuration=3" \
+  -F "transitionDuration=1" \
+  -F "primaryAudioVolume=1" \
+  -F "secondaryAudioVolume=0.3" \
+  -F "transitionEffect=zoom-out" \
+  -F "fps=30" \
+  -F "width=1080" \
+  -F "height=1920" \
+  -F "outputFormat=mp4"
+```
+
+### 4. ⬇️ **Download de Vídeo**
 ```
 GET /download/:filename
+```
+**Descrição:** Faz download do vídeo gerado  
+**Parâmetros:** filename - nome do arquivo retornado na resposta do create-video
+
+**Curl:**
+```bash
+curl -X GET http://localhost:3002/download/video-uuid.mp4 \
+  --output meu-video.mp4
+```
+
+### 5. 📁 **Acessar Arquivos de Upload**
+```
+GET /uploads/:filename
+```
+**Descrição:** Acessa arquivos temporários de upload (imagens e áudios)  
+**Parâmetros:** filename - nome do arquivo
+
+**Curl:**
+```bash
+curl -X GET http://localhost:3002/uploads/arquivo.jpg \
+  --output arquivo-baixado.jpg
 ```
 
 ## 🎨 Efeitos de Transição Disponíveis
