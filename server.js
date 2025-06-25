@@ -12,6 +12,12 @@ const http = require('http');
 const app = express();
 const PORT = process.env.PORT || 3002;
 
+// Configurar timeout de 15 minutos para requisições longas
+app.use((req, res, next) => {
+  req.setTimeout(900000); // 15 minutos
+  next();
+});
+
 // Middleware para parsing JSON
 app.use(express.json());
 
@@ -530,7 +536,7 @@ app.use((error, req, res, next) => {
 });
 
 // Iniciar servidor
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
   console.log(`📊 Status: http://localhost:${PORT}/api/status`);
   console.log(`🎬 Endpoint para criar vídeo: POST http://localhost:${PORT}/api/create-video`);
@@ -538,5 +544,8 @@ app.listen(PORT, () => {
   console.log(`📁 Arquivos de upload: http://localhost:${PORT}/uploads/`);
   console.log(`\n🎯 Efeitos de transição disponíveis: ${validTransitionEffects.join(', ')}`);
 });
+
+// Configurar timeout do servidor HTTP para 15 minutos
+server.setTimeout(900000);
 
 module.exports = app; 
